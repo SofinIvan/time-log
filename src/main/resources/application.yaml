@@ -1,0 +1,8 @@
+spring:
+  application:
+    name: time-log
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/time-log
+    username: postgres
+    password: postgres
