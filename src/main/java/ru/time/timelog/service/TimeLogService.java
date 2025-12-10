@@ -15,8 +15,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @Slf4j
@@ -26,28 +30,37 @@ public class TimeLogService {
     private static final ZoneId ZONE_ID = ZoneId.systemDefault();
     private static final int MAX_QUEUE_SIZE = 100_000;
     private static final int BATCH_SIZE = 100;
+    public static final int DB_TIMEOUT_MS = 300;
 
     private final AtomicBoolean isDbAvailable = new AtomicBoolean(true);
-    private final AtomicInteger failedAttempts = new AtomicInteger(0);
     private final BlockingQueue<TimeLog> pendingLogs = new ArrayBlockingQueue<>(MAX_QUEUE_SIZE);
+    private final ExecutorService dbWriterExecutor = Executors.newFixedThreadPool(3);
 
     private final TimeLogRepository timeLogRepository;
 
     @Scheduled(cron = "${schedule.db.record.cron}")
     public void record() {
-        log.debug("Recording time log to db");
         TimeLog timeLog = createTimeLog();
-        try {
-            if (isDbAvailable.get()) {
-                timeLogRepository.save(timeLog);
-            } else {
-                log.warn("db is unavailable, time logs added to queue");
-                addToPendingQueue(timeLog);
-            }
-        } catch (Exception e) {
-            log.error("error in record method when writing to db", e);
-            isDbAvailable.set(false);
+        if (!isDbAvailable.get()) {
             addToPendingQueue(timeLog);
+        } else {
+            CompletableFuture.runAsync(() -> {
+                        try {
+                            timeLogRepository.save(timeLog);
+                        } catch (Exception e) {
+                            throw new CompletionException(e);
+                        }
+                    }, dbWriterExecutor)
+                    .orTimeout(DB_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .whenComplete((result, ex) -> {
+                        if (ex != null) {
+                            log.error("failed to save time log", ex);
+                            isDbAvailable.set(false);
+                            addToPendingQueue(timeLog);
+                        } else {
+                            log.debug("time log saved: {}", timeLog.getId());
+                        }
+                    });
         }
     }
 
@@ -56,29 +69,47 @@ public class TimeLogService {
         if (isDbAvailable.get() && !pendingLogs.isEmpty()) {
             List<TimeLog> batch = new ArrayList<>(BATCH_SIZE);
             pendingLogs.drainTo(batch, BATCH_SIZE);
-            try {
-                timeLogRepository.saveAll(batch);
-                log.info("successfully saved {} pending records", batch.size());
-            } catch (Exception e) {
-                log.error("failed to save pending records batch", e);
-                isDbAvailable.set(false);
-                batch.forEach(this::addToPendingQueue);
-            }
+            CompletableFuture.supplyAsync(() -> {
+                        try {
+                            timeLogRepository.saveAll(batch);
+                            return batch.size();
+                        } catch (Exception e) {
+                            throw new CompletionException("batch save failed", e);
+                        }
+                    }, dbWriterExecutor)
+                    .orTimeout(DB_TIMEOUT_MS * 2, TimeUnit.MILLISECONDS)
+                    .whenComplete((count, ex) -> {
+                        if (ex != null) {
+                            log.error("failed to save pending records batch", ex);
+                            isDbAvailable.set(false);
+                            batch.forEach(this::addToPendingQueue);
+                        } else {
+                            log.info("successfully saved {} pending records", count);
+                        }
+                    });
         }
     }
 
     @Scheduled(cron = "${schedule.db.check.cron}")
     public void restoreConnection() {
         if (!isDbAvailable.get()) {
-            try {
-                timeLogRepository.checkConnection();
-                isDbAvailable.set(true);
-                failedAttempts.set(0);
-                log.info("db is available, connection restored");
-            } catch (Exception e) {
-                int attempt = failedAttempts.incrementAndGet();
-                log.warn("db still unavailable, attempt: {}", attempt);
-            }
+            CompletableFuture.supplyAsync(() -> {
+                        try {
+                            timeLogRepository.checkConnection();
+                            return true;
+                        } catch (Exception e) {
+                            throw new CompletionException("db is unavailable", e);
+                        }
+                    }, dbWriterExecutor)
+                    .orTimeout(DB_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                    .whenComplete((success, ex) -> {
+                        if (ex == null && success) {
+                            isDbAvailable.set(true);
+                            log.info("db is available, connection restored");
+                        } else {
+                            log.warn("db is unavailable", ex);
+                        }
+                    });
         }
     }
 

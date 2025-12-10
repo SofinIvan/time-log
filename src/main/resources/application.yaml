@@ -7,7 +7,11 @@ spring:
     username: postgres
     password: postgres
     hikari:
-      connection-timeout: 300
+      connection-timeout: 1200
+      validation-timeout: 600
+      max-lifetime: 12000
+      idle-timeout: 6000
+      connection-init-sql: "SELECT 1"
 
 schedule:
   db:
