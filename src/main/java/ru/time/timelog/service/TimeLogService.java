@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class TimeLogService {
 
     private static final ZoneId ZONE_ID = ZoneId.systemDefault();
-    private static final int MAX_QUEUE_SIZE = 10000;
+    private static final int MAX_QUEUE_SIZE = 100_000;
     private static final int BATCH_SIZE = 100;
 
     private final AtomicBoolean isDbAvailable = new AtomicBoolean(true);
@@ -107,7 +107,6 @@ public class TimeLogService {
     private TimeLog createTimeLog() {
         TimeLog timeLog = new TimeLog();
         timeLog.setId(System.currentTimeMillis());
-        timeLog.setCreated(LocalDateTime.now());
         return timeLog;
     }
 
