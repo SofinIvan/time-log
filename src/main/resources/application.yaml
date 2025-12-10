@@ -6,3 +6,14 @@ spring:
     url: jdbc:postgresql://localhost:5432/time-log
     username: postgres
     password: postgres
+    hikari:
+      connection-timeout: 300
+
+schedule:
+  db:
+    record:
+      cron: 0/1 * * * * ?
+    pending:
+      cron: 0/2 * * * * ?
+    check:
+      cron: 0/5 * * * * ?
